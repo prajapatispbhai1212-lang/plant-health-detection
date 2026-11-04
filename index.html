@@ -1,0 +1,463 @@
+!pip install -q tensorflow-datasets scikit-learn streamlit
+
+import os
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
+import numpy as np
+import tensorflow as tf
+import tensorflow_datasets as tfds
+import matplotlib.pyplot as plt
+import streamlit as st
+
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+from google.colab import files
+
+print("Libraries loaded successfully!")
+
+# ============================================================
+# STEP 2: LOAD PLANTVILLAGE DATASET
+# ============================================================
+
+IMG_SIZE = 64
+
+print("Loading PlantVillage dataset...")
+
+dataset, info = tfds.load(
+    "plant_village",
+    split="train",
+    as_supervised=True,
+    with_info=True
+)
+
+class_names = info.features["label"].names
+
+healthy_classes = np.array([
+    "healthy" in name.lower()
+    for name in class_names
+])
+
+print("Classes:", class_names)
+
+# ============================================================
+# STEP 3: IMAGE PREPROCESSING
+# ============================================================
+
+def resize_image(image, label):
+
+    image = tf.image.resize(
+        image,
+        (IMG_SIZE, IMG_SIZE)
+    )
+
+    return tf.cast(image, tf.uint8), label
+
+
+dataset = dataset.map(resize_image).batch(1000)
+
+image_batches = []
+health_batches = []
+
+print("Processing images...")
+
+for images, class_ids in tfds.as_numpy(dataset):
+
+    image_batches.append(images)
+
+    health_batches.append(
+        healthy_classes[class_ids]
+    )
+
+x_all = np.concatenate(image_batches)
+
+y_all = np.concatenate(
+    health_batches
+).astype("float32")
+
+print("Dataset shape:", x_all.shape)
+print("Total images:", len(x_all))
+
+# ============================================================
+# STEP 4: TRAIN TEST SPLIT
+# ============================================================
+
+x_train, x_test, y_train, y_test = train_test_split(
+    x_all,
+    y_all,
+    train_size=0.8,
+    random_state=42,
+    stratify=y_all
+)
+
+x_train = x_train.astype("float32") / 255.0
+x_test = x_test.astype("float32") / 255.0
+
+print("Training images:", x_train.shape)
+print("Testing images:", x_test.shape)
+
+print("Healthy training:", int(y_train.sum()))
+print("Unhealthy training:", int(len(y_train)-y_train.sum()))
+
+# ============================================================
+# STEP 5: BUILD CNN MODEL
+# ============================================================
+
+model = tf.keras.Sequential([
+
+    tf.keras.layers.Input(
+        shape=(64, 64, 3)
+    ),
+
+    tf.keras.layers.Conv2D(
+        16,
+        (3,3),
+        activation="relu"
+    ),
+
+    tf.keras.layers.MaxPooling2D(),
+
+    tf.keras.layers.Conv2D(
+        32,
+        (3,3),
+        activation="relu"
+    ),
+
+    tf.keras.layers.MaxPooling2D(),
+
+    tf.keras.layers.Conv2D(
+        64,
+        (3,3),
+        activation="relu"
+    ),
+
+    tf.keras.layers.MaxPooling2D(),
+
+    tf.keras.layers.Flatten(),
+
+    tf.keras.layers.Dense(
+        64,
+        activation="relu"
+    ),
+
+    tf.keras.layers.Dropout(0.5),
+
+    tf.keras.layers.Dense(
+        1,
+        activation="sigmoid"
+    )
+
+])
+
+model.summary()
+
+# ============================================================
+# STEP 6: COMPILE MODEL
+# ============================================================
+
+model.compile(
+    optimizer="adam",
+    loss="binary_crossentropy",
+    metrics=["accuracy"]
+)
+
+# ============================================================
+# STEP 7: TRAIN MODEL
+# ============================================================
+
+print("CNN Model Training Started...")
+
+history = model.fit(
+    x_train,
+    y_train,
+    epochs=5,
+    batch_size=32,
+    validation_data=(x_test, y_test)
+)
+
+print("Training Completed!")
+
+# ============================================================
+# STEP 8: MODEL EVALUATION
+# ============================================================
+
+test_loss, test_accuracy = model.evaluate(x_test, y_test)
+
+print("Test Loss:", test_loss)
+print("Test Accuracy:", test_accuracy)
+
+# ============================================================
+# STEP 9: CLASSIFICATION REPORT
+# ============================================================
+
+y_prob = model.predict(x_test, verbose=0)
+
+y_pred = (y_prob > 0.5).astype(int).flatten()
+
+print(classification_report(
+    y_test,
+    y_pred,
+    target_names=["Unhealthy", "Healthy"]
+))
+
+# ============================================================
+# STEP 10: CONFUSION MATRIX
+# ============================================================
+
+cm = confusion_matrix(y_test, y_pred)
+
+plt.figure(figsize=(6,5))
+
+plt.imshow(cm, cmap="Greens")
+
+plt.title("Plant Health Confusion Matrix")
+
+plt.xlabel("Predicted Label")
+plt.ylabel("Actual Label")
+
+plt.xticks([0,1], ["Unhealthy", "Healthy"])
+plt.yticks([0,1], ["Unhealthy", "Healthy"])
+
+for i in range(2):
+    for j in range(2):
+        plt.text(j, i, cm[i,j], ha="center", va="center")
+
+plt.colorbar()
+plt.show()
+
+# ============================================================
+# STEP 11: ACCURACY GRAPH
+# ============================================================
+
+plt.figure(figsize=(8,5))
+
+plt.plot(
+    history.history["accuracy"],
+    label="Training Accuracy"
+)
+
+plt.plot(
+    history.history["val_accuracy"],
+    label="Validation Accuracy"
+)
+
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+
+plt.title("CNN Model Accuracy")
+
+plt.legend()
+plt.show()
+
+# ============================================================
+# STEP 12: SAVE MODEL
+# ============================================================
+
+MODEL_PATH = "/content/plant_health_model.keras"
+
+model.save(MODEL_PATH)
+
+print("Model saved successfully!")
+
+# ============================================================
+# STEP 13: UPLOAD PLANT IMAGE
+# ============================================================
+
+print("Please upload plant leaf image...")
+
+uploaded = files.upload()
+
+image_name = list(uploaded.keys())[0]
+
+image = Image.open(image_name).convert("RGB")
+
+# ============================================================
+# STEP 14: IMAGE PREPROCESSING FOR PREDICTION
+# ============================================================
+
+image_resized = image.resize((64,64))
+
+image_array = np.array(
+    image_resized
+).astype("float32") / 255.0
+
+image_array = np.expand_dims(
+    image_array,
+    axis=0
+)
+
+# ============================================================
+# STEP 15: PREDICT PLANT HEALTH
+# ============================================================
+
+prediction = float(
+    model.predict(image_array, verbose=0)[0][0]
+)
+
+healthy_probability = prediction * 100
+
+unhealthy_probability = (1-prediction) * 100
+
+if prediction >= 0.5:
+
+    result = "HEALTHY"
+
+    confidence = healthy_probability
+
+    print("🌿 PLANT IS HEALTHY")
+
+else:
+
+    result = "UNHEALTHY"
+
+    confidence = unhealthy_probability
+
+    print("⚠️ PLANT IS UNHEALTHY")
+
+print("Prediction:", result)
+
+print("Confidence:", round(confidence,2), "%")
+
+print("Healthy Probability:", round(healthy_probability,2), "%")
+
+print("Unhealthy Probability:", round(unhealthy_probability,2), "%")
+
+# ============================================================
+# STEP 16: DISPLAY PREDICTION IMAGE
+# ============================================================
+
+plt.figure(figsize=(6,6))
+
+plt.imshow(image)
+
+plt.title(
+    f"Prediction: {result}\nConfidence: {confidence:.2f}%"
+)
+
+plt.axis("off")
+
+plt.show()
+
+# ============================================================
+# STEP 17: CREATE STREAMLIT FRONTEND FILE
+# ============================================================
+
+frontend_code = r'''
+import streamlit as st
+import tensorflow as tf
+import numpy as np
+from PIL import Image
+
+st.set_page_config(
+    page_title="Plant Health Detection",
+    page_icon="🌿",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+.stApp {
+    background-color: #f1f8f2;
+}
+.title {
+    text-align: center;
+    color: #176b36;
+    font-size: 38px;
+    font-weight: bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+@st.cache_resource
+def load_model():
+    return tf.keras.models.load_model(
+        "/content/plant_health_model.keras"
+    )
+
+model = load_model()
+
+st.markdown(
+    '<div class="title">🌿 Plant Health Detection System</div>',
+    unsafe_allow_html=True
+)
+
+st.write("### AI Based Plant Health Prediction Using CNN")
+
+st.sidebar.title("About Project")
+
+st.sidebar.write("""
+Plant Health Detection using CNN.
+
+Upload a plant leaf image to detect
+whether it is healthy or unhealthy.
+""")
+
+st.sidebar.write("Technology: TensorFlow, CNN, Python")
+
+uploaded_file = st.file_uploader(
+    "Upload Plant Leaf Image",
+    type=["jpg", "jpeg", "png"]
+)
+
+if uploaded_file:
+
+    image = Image.open(uploaded_file).convert("RGB")
+
+    st.image(
+        image,
+        caption="Uploaded Plant Image",
+        width=350
+    )
+
+    if st.button("Detect Plant Health"):
+
+        resized = image.resize((64,64))
+
+        array = np.array(resized).astype("float32") / 255.0
+
+        array = np.expand_dims(array, axis=0)
+
+        prediction = float(
+            model.predict(array, verbose=0)[0][0]
+        )
+
+        if prediction >= 0.5:
+
+            st.success("🌿 HEALTHY PLANT")
+
+            confidence = prediction * 100
+
+        else:
+
+            st.error("⚠️ UNHEALTHY PLANT")
+
+            confidence = (1-prediction) * 100
+
+        st.metric(
+            "Prediction Confidence",
+            f"{confidence:.2f}%"
+        )
+
+        st.progress(confidence/100)
+
+st.markdown("---")
+
+st.markdown(
+    "### Plant Health Detection System | CNN Project"
+)
+'''
+
+with open("/content/app.py", "w") as f:
+    f.write(frontend_code)
+
+print("Streamlit frontend file created!")
+
+# ============================================================
+# STEP 18: DOWNLOAD TRAINED MODEL
+# ============================================================
+
+print("Downloading trained model...")
+
+files.download(MODEL_PATH)
+
+print("ALL TASKS COMPLETED SUCCESSFULLY!")
